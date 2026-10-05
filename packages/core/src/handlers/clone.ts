@@ -32,6 +32,7 @@ import { findCommandFiles } from '../utils/commands';
 import { createLogger } from '@archon/paths';
 import { resolveDefaultAssistant } from '../config/resolve-assistant';
 import { resolveGitHubTokenFromEnv } from '../github-auth/config';
+import { getForgeHostCredentials } from '../credentials/forge-host-store';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -167,6 +168,31 @@ export function resolveForgeAuth(url: string): CloneCredentials | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * Clone credentials for a repository URL: env-configured forge auth first
+ * (resolveForgeAuth), then the install-wide forge host credential store —
+ * a token stored for the URL's hostname in the console (forge-hosts.json)
+ * authenticates the clone. Matches dispatch precedence: an explicit env
+ * token wins, the stored credential is the fallback. An unreadable or
+ * undecryptable store degrades to anonymous, same as every other store read.
+ */
+export async function resolveCloneAuth(url: string): Promise<CloneCredentials | undefined> {
+  const envCredentials = resolveForgeAuth(url);
+  if (envCredentials) return envCredentials;
+
+  const parsed = safeParseUrl(url);
+  const hostname = (parsed?.hostname ?? url.split('/')[0]).trim().toLowerCase();
+  if (!hostname) return undefined;
+
+  try {
+    const stored = await getForgeHostCredentials();
+    const token = stored.get(hostname);
+    return token ? tokenAsUsername(token) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface RegisterResult {
@@ -385,7 +411,7 @@ export async function cloneRepository(repoUrl: string): Promise<RegisterResult> 
   await ensureProjectStructure(ownerName, repoName);
 
   // Resolve authentication without putting it into the repository URL.
-  const credentials = resolveForgeAuth(workingUrl);
+  const credentials = await resolveCloneAuth(workingUrl);
 
   // Remove the empty source/ directory before cloning (git clone requires non-existent target)
   try {

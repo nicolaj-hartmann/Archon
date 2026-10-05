@@ -62,6 +62,14 @@ const mockUpdateCodebase = mock<typeof CodebaseDb.updateCodebase>(() => Promise.
 const mockCreateProjectSourceSymlink = mock((): Promise<void> => Promise.resolve());
 const mockEnsureProjectStructure = mock((): Promise<void> => Promise.resolve());
 
+// ── Forge host credential store mock ────────────────────────────────────────
+const mockGetForgeHostCredentials = mock(
+  (): Promise<Map<string, string>> => Promise.resolve(new Map())
+);
+mock.module('../credentials/forge-host-store', () => ({
+  getForgeHostCredentials: mockGetForgeHostCredentials,
+}));
+
 mock.module('../db/codebases', () => ({
   createCodebase: mockCreateCodebase,
   getCodebaseCommands: mockGetCodebaseCommands,
@@ -778,6 +786,57 @@ describe('cloneRepository', () => {
       const result = resolveForgeAuth('https://git.example.com/group/app');
       expect(result).toBeUndefined();
       delete process.env.GITEA_URL;
+    });
+  });
+
+  // ── resolveCloneAuth unit tests ──────────────────────────────────────────
+  describe('resolveCloneAuth', () => {
+    const { resolveCloneAuth } = require('./clone');
+
+    afterEach(() => {
+      mockGetForgeHostCredentials.mockImplementation(() => Promise.resolve(new Map()));
+    });
+
+    test('falls back to a stored forge host credential for an arbitrary hostname', async () => {
+      mockGetForgeHostCredentials.mockImplementation(() =>
+        Promise.resolve(new Map([['code.levior.io', 'tok_stored_123']]))
+      );
+      const result = await resolveCloneAuth('https://code.levior.io/levior-admin/dr-marker.git');
+      expect(result).toEqual({ username: 'tok_stored_123', password: '' });
+    });
+
+    test('env-configured forge auth wins over a stored credential', async () => {
+      process.env.GITEA_URL = 'https://code.levior.io';
+      process.env.GITEA_TOKEN = 'tok_env_wins';
+      mockGetForgeHostCredentials.mockImplementation(() =>
+        Promise.resolve(new Map([['code.levior.io', 'tok_stored_loses']]))
+      );
+      const result = await resolveCloneAuth('https://code.levior.io/team/app.git');
+      expect(result).toEqual({ username: 'tok_env_wins', password: '' });
+      delete process.env.GITEA_URL;
+      delete process.env.GITEA_TOKEN;
+    });
+
+    test('returns undefined when the store has no entry for the hostname', async () => {
+      mockGetForgeHostCredentials.mockImplementation(() =>
+        Promise.resolve(new Map([['other.example.com', 'tok_other']]))
+      );
+      const result = await resolveCloneAuth('https://code.levior.io/team/app.git');
+      expect(result).toBeUndefined();
+    });
+
+    test('degrades to anonymous when the store is unreadable', async () => {
+      mockGetForgeHostCredentials.mockImplementation(() => Promise.reject(new Error('unreadable')));
+      const result = await resolveCloneAuth('https://code.levior.io/team/app.git');
+      expect(result).toBeUndefined();
+    });
+
+    test('resolves a stored credential for bare host/path form without protocol', async () => {
+      mockGetForgeHostCredentials.mockImplementation(() =>
+        Promise.resolve(new Map([['code.core.ci', 'tok_core']]))
+      );
+      const result = await resolveCloneAuth('code.core.ci/Hartmann/scratch');
+      expect(result).toEqual({ username: 'tok_core', password: '' });
     });
   });
 
