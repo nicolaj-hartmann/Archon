@@ -80,6 +80,10 @@ Archon maintains the provider and platform integrations it explicitly designates
 
 When citing this policy in a PR comment: `direction.md §community-plugins`.
 
+## Forge credentials
+
+- **Deployment-native credentials always outrank install-stored values: a credential named by trusted forge config (an environment variable) wins for its host, and the install-stored token satisfies the host only as a fallback. Rotation through the deployment's native channel therefore always takes effect. A stored credential never selects an executable.** Cite this direction as `direction.md §forge-credentials`.
+
 ## Workflow language (YAML surface)
 
 The workflow YAML is a **coordination language**, not a programming language. Admissibility test for any new YAML surface feature (field, node type, expression capability): (1) does the *engine* need to see it to govern the run? (2) is it declarative data, not evaluation? (3) could a script node + existing wiring express it today? A feature that computes rather than coordinates is declined with a pointer to the escape hatch. Full rationale, case law, and the five failure smells: `.archon/workflow-language-constitution.md`.

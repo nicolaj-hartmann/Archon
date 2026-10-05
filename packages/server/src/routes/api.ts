@@ -52,6 +52,10 @@ import {
   InvalidProviderKeyError,
   listUserProviderKeys,
   deleteUserProviderKey,
+  saveForgeHost,
+  listForgeHosts,
+  deleteForgeHost,
+  ForgeHostsFileUnreadableError,
   listConnectableVendors,
   buildAgentCredentialMatrix,
   normalizeCredentialVendor,
@@ -84,6 +88,7 @@ import {
   isInsideArchonWorkspaces,
   isPathInside,
   getArchonHome,
+  getArchonConfigPath,
   isDocker,
   isWSL,
   getWSLDistroName,
@@ -114,6 +119,7 @@ import type { DashboardWorkflowRun } from '@archon/core/schemas/workflow-run';
 import { signalWorkflowWaitRequestSchema } from '@archon/core/schemas/workflow-run';
 import { findCommandFiles } from '@archon/core/utils/commands';
 import { resumeWorkflowRunFromServer } from '../services/workflow-resume-service';
+import { testForgeHostConnection } from '../forge-host-probe';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -386,6 +392,14 @@ import {
   updateUserAliasesBodySchema,
   updateUserDefaultBodySchema,
 } from './schemas/user-ai-prefs.schemas';
+import {
+  forgeHostListResponseSchema,
+  forgeHostSaveBodySchema,
+  forgeHostSaveResponseSchema,
+  forgeHostDeleteResponseSchema,
+  forgeHostTestBodySchema,
+  forgeHostTestResponseSchema,
+} from './schemas/forge-host.schemas';
 import { mapDeviceFlowErrorToPollStatus } from './auth-poll-status';
 import {
   getProviderInfoList,
@@ -1482,6 +1496,74 @@ const providerOAuthPollRoute = createRoute({
   },
 });
 
+// ---- Install-wide forge host credentials (forge-hosts.json) ----
+// Identity-gated but install-wide in scope; save, delete, and test are claim-bound
+// on the trusted forge.hosts map. The wildcard tail is the URL-encoded host; the
+// store keys it normalized.
+const forgeHostListRoute = createRoute({
+  method: 'get',
+  path: '/api/forge-hosts',
+  tags: ['Forge'],
+  summary: 'List the install-wide stored forge host credentials (metadata only)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: forgeHostListResponseSchema } },
+      description: 'Stored hosts — no secret value',
+    },
+    401: jsonError('Web auth required (X-Archon-User header missing)'),
+  },
+});
+
+const forgeHostSaveRoute = createRoute({
+  method: 'put',
+  path: '/api/forge-hosts/*',
+  tags: ['Forge'],
+  summary: 'Store (upsert) the credential for a claimed forge host',
+  request: { body: { content: { 'application/json': { schema: forgeHostSaveBodySchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: forgeHostSaveResponseSchema } },
+      description: 'Credential stored (encrypted) — response carries no secret value',
+    },
+    400: jsonError('Host not claimed in the trusted forge.hosts, or malformed host'),
+    401: jsonError('Web auth required (X-Archon-User header missing)'),
+    500: jsonError('Store file unreadable — repair or delete it'),
+  },
+});
+
+const forgeHostDeleteRoute = createRoute({
+  method: 'delete',
+  path: '/api/forge-hosts/*',
+  tags: ['Forge'],
+  summary: 'Remove a claimed forge host’s stored credential (idempotent)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: forgeHostDeleteResponseSchema } },
+      description: 'Credential removed',
+    },
+    400: jsonError('Host not claimed in the trusted forge.hosts, or malformed host'),
+    401: jsonError('Web auth required (X-Archon-User header missing)'),
+    500: jsonError('Store file unreadable — repair or delete it'),
+  },
+});
+
+const forgeHostTestRoute = createRoute({
+  method: 'post',
+  path: '/api/forge-hosts/test',
+  tags: ['Forge'],
+  summary: 'Probe a claimed forge host with a caller-supplied token (GET /api/v1/user)',
+  request: { body: { content: { 'application/json': { schema: forgeHostTestBodySchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: forgeHostTestResponseSchema } },
+      description: 'Probe result — the token never appears in it',
+    },
+    400: jsonError('Host not claimed in the trusted forge.hosts, or malformed host'),
+    401: jsonError('Web auth required (X-Archon-User header missing)'),
+    500: jsonError('Probe infrastructure failure'),
+  },
+});
+
 const userAiPrefsGetRoute = createRoute({
   method: 'get',
   path: '/api/auth/me/ai-prefs',
@@ -1738,6 +1820,19 @@ export async function requireWebUser(
     getLog().error({ err: err as Error, headerPresent: true }, 'web.user_resolve_failed');
     return { error: apiError(c, 503, 'Could not verify web identity — backend unavailable') };
   }
+}
+
+/**
+ * Host-key normalization for the forge-host routes. Mirrors `normalizeHost`
+ * from @archon/forge/plugin-config — production code in this package does not
+ * depend on @archon/forge, so the mirror is pinned by a conformance test
+ * (api.forge-hosts.test.ts) instead: the store key these routes write must
+ * equal the key dispatch looks up with `normalizeHost(host)`
+ * (packages/forge/src/dispatch.ts), or the stored-credential fallback never
+ * hits.
+ */
+export function normalizeForgeHost(host: string): string {
+  return host.trim().toLowerCase();
 }
 
 /**
@@ -2095,6 +2190,126 @@ export function registerApiRoutes(
     // to an error status rather than another user's login.
     const result = pollOAuth(sessionId, web.userId, code);
     return c.json(result);
+  });
+
+  // ---- Install-wide forge host credentials ----
+  /** A raw path tail / body host is malformed when it is blank, contains a
+   *  separator ('/', '@'), or carries whitespace. */
+  const isMalformedForgeHost = (host: string): boolean =>
+    host === '' || host.includes('/') || host.includes('@') || /\s/.test(host);
+
+  /** The trusted config’s `forge.hosts` keys, normalized. ENOENT → no claims. */
+  async function loadClaimedForgeHosts(): Promise<Set<string>> {
+    let source: string;
+    try {
+      source = await readFile(getArchonConfigPath(), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+      throw error;
+    }
+    const doc: unknown = Bun.YAML.parse(source);
+    const hosts =
+      typeof doc === 'object' && doc !== null
+        ? (doc as { forge?: { hosts?: unknown } }).forge?.hosts
+        : undefined;
+    if (typeof hosts !== 'object' || hosts === null || Array.isArray(hosts)) return new Set();
+    return new Set(Object.keys(hosts as Record<string, unknown>).map(normalizeForgeHost));
+  }
+
+  /** A 400 naming the trusted config when the host is not claimed in it; undefined when claimed. */
+  async function unclaimedForgeHostError(c: Context, host: string): Promise<Response | undefined> {
+    const claimed = await loadClaimedForgeHosts();
+    return claimed.has(host)
+      ? undefined
+      : apiError(c, 400, `Host '${host}' is not claimed in the trusted forge.hosts config`);
+  }
+
+  const FORGE_HOSTS_PATH_PREFIX = '/api/forge-hosts/';
+  // A stable, secret-free 500 that names the file and the repair; the store's own
+  // error text may name a full path and is not operator-facing.
+  const FORGE_STORE_UNREADABLE =
+    'The forge host credential store (forge-hosts.json) cannot be read. Repair or delete the file, then retry.';
+
+  /** Resolve the wildcard tail after `/api/forge-hosts/` to a normalized host,
+   *  or undefined for any malformed shape (bad percent-escape, empty, nested
+   *  path segments, '@', whitespace). */
+  function resolveWildcardForgeHost(c: Context): string | undefined {
+    const rawTail = c.req.path.slice(FORGE_HOSTS_PATH_PREFIX.length);
+    let tail: string;
+    try {
+      tail = decodeURIComponent(rawTail);
+    } catch {
+      return undefined; // invalid percent-escape
+    }
+    if (isMalformedForgeHost(tail)) return undefined;
+    return normalizeForgeHost(tail);
+  }
+
+  registerOpenApiRoute(forgeHostListRoute, async c => {
+    const web = await requireWebUser(c, 'Web authentication required to manage forge hosts');
+    if ('error' in web) return web.error;
+    try {
+      return c.json({ hosts: await listForgeHosts() });
+    } catch (err) {
+      getLog().error({ err: err as Error }, 'forge.hosts_list_failed');
+      return apiError(c, 500, 'Failed to list forge hosts');
+    }
+  });
+
+  registerOpenApiRoute(forgeHostSaveRoute, async c => {
+    const web = await requireWebUser(c, 'Web authentication required to manage forge hosts');
+    if ('error' in web) return web.error;
+    const host = resolveWildcardForgeHost(c);
+    if (host === undefined) return apiError(c, 400, 'Malformed forge host in path');
+    try {
+      const denied = await unclaimedForgeHostError(c, host);
+      if (denied) return denied;
+      const { token } = getValidatedBody(c, forgeHostSaveBodySchema);
+      await saveForgeHost(host, token);
+      return c.json({ success: true, host });
+    } catch (err) {
+      if (err instanceof ForgeHostsFileUnreadableError) {
+        return apiError(c, 500, FORGE_STORE_UNREADABLE);
+      }
+      getLog().error({ err: err as Error, host }, 'forge.hosts_save_failed');
+      return apiError(c, 500, 'Failed to store the forge host credential');
+    }
+  });
+
+  registerOpenApiRoute(forgeHostDeleteRoute, async c => {
+    const web = await requireWebUser(c, 'Web authentication required to manage forge hosts');
+    if ('error' in web) return web.error;
+    const host = resolveWildcardForgeHost(c);
+    if (host === undefined) return apiError(c, 400, 'Malformed forge host in path');
+    try {
+      const denied = await unclaimedForgeHostError(c, host);
+      if (denied) return denied;
+      await deleteForgeHost(host);
+      return c.json({ success: true });
+    } catch (err) {
+      if (err instanceof ForgeHostsFileUnreadableError) {
+        return apiError(c, 500, FORGE_STORE_UNREADABLE);
+      }
+      getLog().error({ err: err as Error, host }, 'forge.hosts_delete_failed');
+      return apiError(c, 500, 'Failed to remove the forge host credential');
+    }
+  });
+
+  registerOpenApiRoute(forgeHostTestRoute, async c => {
+    const web = await requireWebUser(c, 'Web authentication required to manage forge hosts');
+    if ('error' in web) return web.error;
+    const { host: rawHost, token } = getValidatedBody(c, forgeHostTestBodySchema);
+    if (isMalformedForgeHost(rawHost)) return apiError(c, 400, 'Malformed forge host');
+    const host = normalizeForgeHost(rawHost);
+    try {
+      const denied = await unclaimedForgeHostError(c, host);
+      if (denied) return denied;
+      const result = await testForgeHostConnection(host, token);
+      return c.json(result);
+    } catch (err) {
+      getLog().error({ err: err as Error, host }, 'forge.hosts_test_failed');
+      return apiError(c, 500, 'Failed to test the forge host connection');
+    }
   });
 
   // ---- Per-user AI preferences (Phase 3) ----

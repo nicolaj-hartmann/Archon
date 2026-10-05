@@ -19,5 +19,6 @@ export * from './settings';
 export * from './providers';
 export * from './github';
 export * from './providerKeys';
+export * from './forgeHosts';
 
 export { HttpError } from '../lib/http';

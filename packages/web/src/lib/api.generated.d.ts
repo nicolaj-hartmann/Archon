@@ -514,6 +514,232 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/forge-hosts': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List the install-wide stored forge host credentials (metadata only) */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Stored hosts — no secret value */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ForgeHostListResponse'];
+          };
+        };
+        /** @description Web auth required (X-Archon-User header missing) */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/forge-hosts/*': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Store (upsert) the credential for a claimed forge host */
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['ForgeHostSaveBody'];
+        };
+      };
+      responses: {
+        /** @description Credential stored (encrypted) — response carries no secret value */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ForgeHostSaveResponse'];
+          };
+        };
+        /** @description Host not claimed in the trusted forge.hosts, or malformed host */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Web auth required (X-Archon-User header missing) */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Store file unreadable — repair or delete it */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    post?: never;
+    /** Remove a claimed forge host’s stored credential (idempotent) */
+    delete: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Credential removed */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ForgeHostDeleteResponse'];
+          };
+        };
+        /** @description Host not claimed in the trusted forge.hosts, or malformed host */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Web auth required (X-Archon-User header missing) */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Store file unreadable — repair or delete it */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/forge-hosts/test': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Probe a claimed forge host with a caller-supplied token (GET /api/v1/user) */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['ForgeHostTestBody'];
+        };
+      };
+      responses: {
+        /** @description Probe result — the token never appears in it */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ForgeHostTestResponse'];
+          };
+        };
+        /** @description Host not claimed in the trusted forge.hosts, or malformed host */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Web auth required (X-Archon-User header missing) */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Probe infrastructure failure */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/auth/me/ai-prefs': {
     parameters: {
       query?: never;
@@ -3784,6 +4010,41 @@ export interface components {
     ProviderOAuthPollBody: {
       sessionId: string;
       code?: string;
+    };
+    ForgeHostListResponse: {
+      hosts: components['schemas']['ForgeHostMeta'][];
+    };
+    ForgeHostMeta: {
+      host: string;
+      created_at: string;
+      updated_at: string;
+    };
+    ForgeHostSaveResponse: {
+      success: boolean;
+      host: string;
+    };
+    ForgeHostSaveBody: {
+      token: string;
+    };
+    ForgeHostDeleteResponse: {
+      success: boolean;
+    };
+    ForgeHostTestResponse:
+      | {
+          /** @enum {boolean} */
+          ok: true;
+          login: string;
+        }
+      | {
+          /** @enum {boolean} */
+          ok: false;
+          /** @enum {string} */
+          kind: 'bad_token' | 'unreachable' | 'not_gitea_api';
+          message: string;
+        };
+    ForgeHostTestBody: {
+      host: string;
+      token: string;
     };
     UserAiPrefs: {
       tiers?: components['schemas']['UserTiersConfig'];

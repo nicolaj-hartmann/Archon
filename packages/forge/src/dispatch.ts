@@ -225,14 +225,16 @@ function selectedCredential(
   discovery: PluginDiscovery,
   plugin: DiscoveredPlugin,
   host: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  hostCredentials?: Map<string, string>
 ): { token?: string; missing?: string } {
   const override = discovery.hostConfig.get(host)?.token_env;
   const configured = discovery.pluginTokenEnv.get(plugin.metadata.name);
   const names = override ? [override] : configured ? [configured] : plugin.metadata.token_env;
-  if (names.length === 0) return {};
   for (const name of names) if (env[name]) return { token: env[name] };
-  return { missing: names.join(' or ') };
+  const stored = hostCredentials?.get(normalizeHost(host));
+  if (stored !== undefined) return { token: stored };
+  return names.length > 0 ? { missing: names.join(' or ') } : {};
 }
 
 export async function dispatchForge(
@@ -244,6 +246,12 @@ export async function dispatchForge(
     discovery?: PluginDiscovery;
     /** Passed to `discoverPlugins`; the host owns where installed plugins live. */
     pluginsDir?: string;
+    /**
+     * Install-stored host credentials (normalized host → token). Consulted as
+     * a fallback only when the host's declared env names yield no value; the
+     * stored credential never selects a plugin.
+     */
+    hostCredentials?: Map<string, string>;
     timeoutMs?: number;
     maxOutputBytes?: number;
     signal?: AbortSignal;
@@ -312,7 +320,8 @@ export async function dispatchForge(
           discovery,
           plugin,
           selectedHost,
-          options.credentialEnv ?? env
+          options.credentialEnv ?? env,
+          options.hostCredentials
         );
         if (credential.missing && request.op !== 'resolve') {
           response = errorResponse(request, {

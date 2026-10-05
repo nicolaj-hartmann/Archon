@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { getArchonConfigPath } from '@archon/paths/archon-paths';
-import { getPluginsPath } from '@archon/paths';
+import { getPluginsPath, createLogger } from '@archon/paths';
+import { getForgeHostCredentials } from '@archon/core';
 import { dispatchForge, type ForgeOperationAudit } from '@archon/forge/dispatch';
 import { forgePluginConfigSchema } from '@archon/forge/plugin-config';
 import {
@@ -42,6 +43,13 @@ async function persistAudit(audit: ForgeOperationAudit, runId: string): Promise<
   }
 }
 
+/** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
+let cachedLog: ReturnType<typeof createLogger> | undefined;
+function getLog(): ReturnType<typeof createLogger> {
+  if (!cachedLog) cachedLog = createLogger('cli.forge');
+  return cachedLog;
+}
+
 export async function forgeCommand(
   subcommand: string | undefined,
   options: {
@@ -53,6 +61,8 @@ export async function forgeCommand(
   dependencies: {
     dispatch?: typeof dispatchForge;
     readConfig?: () => Promise<unknown>;
+    /** Read the install-wide stored host credentials (normalized host → token). */
+    readHostCredentials?: () => Promise<Map<string, string>>;
     audit?: typeof persistAudit;
     write?: typeof writeJsonLine;
     env?: NodeJS.ProcessEnv;
@@ -83,6 +93,15 @@ export async function forgeCommand(
         ? await dependencies.readConfig()
         : await readForgeConfig(options.configPath ?? getArchonConfigPath())
     );
+    // A store read failure degrades to no stored credentials (one warn, no token value).
+    let hostCredentials: Map<string, string> | undefined;
+    try {
+      hostCredentials = await (dependencies.readHostCredentials ?? getForgeHostCredentials)();
+    } catch {
+      getLog().warn(
+        'failed to read the stored forge host credentials (forge-hosts.json); continuing without stored host credentials'
+      );
+    }
     dispatched = true;
     const result = await (dependencies.dispatch ?? dispatchForge)(request, {
       config,
@@ -92,6 +111,7 @@ export async function forgeCommand(
       // Repo scope may supply the credential named by trusted user config. It
       // cannot replace executable discovery or the plugin's runtime identity.
       credentialEnv: env,
+      hostCredentials,
     });
     response = result.response;
     if (env.WORKFLOW_ID) {

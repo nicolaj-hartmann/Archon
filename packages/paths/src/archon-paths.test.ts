@@ -19,6 +19,7 @@ import {
   getArchonConfigPath,
   getInstallManifestPath,
   getCredentialKeyPath,
+  getForgeHostsPath,
   getHomeWorkflowsPath,
   getHomeCommandsPath,
   getHomeScriptsPath,
@@ -366,6 +367,22 @@ describe('archon-paths', () => {
     test('returns credential-key inside ARCHON_HOME', () => {
       process.env.ARCHON_HOME = '/custom/archon';
       expect(getCredentialKeyPath()).toBe(join('/custom/archon', 'credential-key'));
+    });
+  });
+
+  describe('getForgeHostsPath', () => {
+    test('stays on the docker home when ARCHON_HOME leaks into the container', () => {
+      process.env.WORKSPACE_PATH = '/workspace';
+      process.env.ARCHON_DOCKER = 'true';
+      process.env.ARCHON_HOME = '/tmp/host-path';
+      expect(getForgeHostsPath()).toBe(join('/.archon', 'forge-hosts.json'));
+    });
+
+    test('returns forge-hosts.json inside ARCHON_HOME (local)', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_DOCKER;
+      process.env.ARCHON_HOME = '/custom/archon';
+      expect(getForgeHostsPath()).toBe(join('/custom/archon', 'forge-hosts.json'));
     });
   });
 

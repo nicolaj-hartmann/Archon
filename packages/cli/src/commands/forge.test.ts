@@ -3,13 +3,14 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getPluginsPath } from '@archon/paths';
-import { trackTempRoots } from '@archon/paths/test-utils';
+import { captureLogLines, trackTempRoots } from '@archon/paths/test-utils';
 import { forgeCommand } from './forge';
 import {
   forgeAuditResponse,
   type ForgeRequest,
   type ForgeResponse,
 } from '@archon/forge/operations';
+import type { ForgeDispatchResult } from '@archon/forge/dispatch';
 
 test('local resolve does not discover plugins and emits no-forge JSON', async () => {
   const output: unknown[] = [];
@@ -359,4 +360,86 @@ test('an invalid mutation request is refused before dispatch begins', async () =
   expect(code).toBe(1);
   expect(output[0]).toMatchObject({ ok: false, error: { kind: 'invalid_request' } });
   expect(output[0]).not.toHaveProperty('mutation');
+});
+
+test('composes stored host credentials into dispatch and fails safe when the store is unreadable', async () => {
+  const hostCredentials = new Map([['code.core.ci', 'tok-store-1']]);
+  const response: ForgeResponse = {
+    operationId: 'fixed',
+    ok: true,
+    result: { op: 'resolve', value: { kind: 'none', forge: 'none' } },
+  };
+  const makeResult = (): ForgeDispatchResult => ({
+    response,
+    plugin: null,
+    audit: {
+      operationId: 'fixed',
+      operation: 'resolve',
+      target: null,
+      plugin: null,
+      result: forgeAuditResponse(response),
+      durationMs: 0,
+    },
+  });
+
+  // Every invocation reads the store once and hands the map to dispatchForge.
+  let storeReads = 0;
+  let received: unknown;
+  const code = await forgeCommand(
+    'resolve',
+    { data: '{"remote":null}' },
+    {
+      readConfig: async () => ({}),
+      readHostCredentials: async () => {
+        storeReads += 1;
+        return hostCredentials;
+      },
+      dispatch: async (_request, options) => {
+        received = options;
+        return makeResult();
+      },
+      write: async () => {},
+      env: {},
+    }
+  );
+  expect(code).toBe(0);
+  expect(storeReads).toBe(1);
+  expect((received as { hostCredentials?: Map<string, string> }).hostCredentials).toEqual(
+    hostCredentials
+  );
+
+  // An unreadable store must not break the operation: dispatch runs without
+  // hostCredentials, the result passes through unchanged, and exactly one warn
+  // line is logged that carries no token value.
+  let warnReceived: unknown;
+  const output: unknown[] = [];
+  const captured = captureLogLines();
+  try {
+    const code2 = await forgeCommand(
+      'resolve',
+      { data: '{"remote":null}' },
+      {
+        readConfig: async () => ({}),
+        readHostCredentials: async () => {
+          throw new Error('boom-forge-store');
+        },
+        dispatch: async (_request, options) => {
+          warnReceived = options;
+          return makeResult();
+        },
+        write: async value => {
+          output.push(value);
+        },
+        env: {},
+      }
+    );
+    expect(code2).toBe(0);
+    expect((warnReceived as { hostCredentials?: unknown }).hostCredentials).toBeUndefined();
+    expect(output).toEqual([response]);
+    const warns = captured.lines.filter(line => line.level === 40);
+    expect(warns).toHaveLength(1);
+    expect(JSON.stringify(warns[0])).not.toContain('tok-store-1');
+  } finally {
+    captured.restore();
+  }
 });

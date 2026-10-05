@@ -265,6 +265,9 @@
     ],
     [
       "src/db/isolation-environments.retention.integration.test.ts"
+    ],
+    [
+      "src/credentials/forge-host-store.test.ts"
     ]
   ]
 }

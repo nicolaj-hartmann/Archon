@@ -86,6 +86,22 @@ The summary states are `none`, `pending`, `green`, `red`, `gated` and `unknown`.
 
 `required` is null when no authoritative required set was obtained. The current GitHub plugin returns null; it does not infer branch protection from check names.
 
+## Stored host credentials
+
+Self-hosted Gitea/Forgejo hosts can additionally carry an install-stored token, managed from the console's **Forge Hosts** panel on the Settings page. The install stores one token per claimed host in `$ARCHON_HOME/forge-hosts.json`, encrypted per entry with AES-256-GCM under the same encryption key the per-user provider credentials use, written `0600` and replaced atomically. There is no CLI write command.
+
+**Precedence: the environment credential wins.** For each host, dispatch first resolves the credential named by the host's trusted `forge.hosts` config (`token_env`); only when that yields no token does the install-stored token for the host satisfy the request. Rotation through the deployment's native channel therefore always takes effect: the environment value shadows the stored one, and removing it reveals the stored one — no file change, no restart. A stored credential never selects a plugin: only a trusted `forge.hosts` claim does. For a plugin that declares no `token_env` names (the in-tree Gitea/Forgejo plugin does), no environment name can ever win, so the flip is vacuous for it: the stored token is the only credential the plugin can receive. Such a plugin has no pre-flight credential gate — dispatch launches it and the vendor decides; a rejected token surfaces as a vendor authentication error, not a `no_credential` failure.
+
+**No restart.** Every `archon forge` invocation re-reads the store, and the console's save, test and remove act on it live: a forge operation dispatched after a save already authenticates with the stored credential.
+
+**Claim requirement.** A host can only be stored, tested, or removed if it is present in trusted `forge.hosts` in the user Archon config; the console routes answer 400 naming `forge.hosts` otherwise. The list and the panel disclose claimed-host metadata only — no credential material in any response.
+
+**Key rotation.** After a `TOKEN_ENCRYPTION_KEY` rotation or a regenerated local key, stored entries are unreadable until re-saved: dispatch skips an undecryptable entry with one warning, and the console still lists the host (the list never decrypts). Saving the host again restores it; other hosts' entries stay in the file byte-identical and are not dropped by one host's save.
+
+**Downgrade and format.** The document carries `version: 1`; older builds ignore entries they cannot parse, so verify with a forge operation after downgrading across a format change. A breaking format change bumps the version and says so in the release notes.
+
+**Test connection.** The panel's test connection runs a vendor-neutral server-side probe — `GET https://<host>/api/v1/user` with the caller-supplied token, Gitea/Forgejo-only, 10 s bound. It answers with the resolved login or classifies the failure as `bad_token`, `unreachable`, or `not_gitea_api`; the token value appears in the probe's request header only. The in-tree Gitea/Forgejo plugin declares no credential-test operation, so this probe stands until the plugin gains that operation — when it does, the probe is either deleted or conformance-tested against the plugin's operation.
+
 ## Use the forge path in the SDLC pack
 
 The bundled SDLC pack reads checks and performs its pull-request writes through `gh` by default. The forge path is an explicit opt-in until the GitHub plugin installs through the marketplace. To opt in, install a plugin for the pull request's host and set `ARCHON_SDLC_FORGE=forge` in the environment Archon runs with, for example `~/.archon/.env`. One switch covers both reads and writes on the pull request and its checks; a value other than `gh` or `forge` fails the steps that use it. The forge contract has no issue operation, so the issues `file-discoveries` files go through `gh` whichever source is selected.

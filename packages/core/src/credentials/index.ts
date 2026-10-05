@@ -39,6 +39,15 @@ export {
 } from './connect-service';
 export { SUBSCRIPTION_PROVIDERS, ARCHON_TO_PI_OAUTH, piOAuthProviderFor } from './oauth-providers';
 export {
+  saveForgeHost,
+  listForgeHosts,
+  getForgeHostCredentials,
+  deleteForgeHost,
+  ForgeHostsFileUnreadableError,
+  type ForgeHostMeta,
+  type SaveForgeHostOptions,
+} from './forge-host-store';
+export {
   startOAuth,
   pollOAuth,
   cancelOAuth,
