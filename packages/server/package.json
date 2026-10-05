@@ -135,6 +135,12 @@
     ],
     [
       "src/routes/schemas/config.schemas.test.ts"
+    ],
+    [
+      "src/routes/api.forge-hosts.test.ts"
+    ],
+    [
+      "src/forge-host-probe.test.ts"
     ]
   ]
 }

@@ -33,6 +33,8 @@ export const K = {
   providers: 'providers' as const,
   updateCheck: 'update-check' as const,
   githubConnection: 'github-connection' as const,
+  // Install-wide forge host credentials (no user column — one row per install).
+  forgeHosts: 'forge-hosts' as const,
   providerConnections: 'provider-connections' as const,
   userAiPrefs: 'user-ai-prefs' as const,
   piModels: 'pi-models' as const,

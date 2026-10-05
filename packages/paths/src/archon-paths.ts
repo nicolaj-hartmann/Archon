@@ -287,6 +287,16 @@ export function getCredentialKeyPath(): string {
 }
 
 /**
+ * Path to the install-wide forge host credential store. An explicitly set
+ * ARCHON_HOME wins even on the docker-image home (where `getArchonHome` ignores
+ * it) so tests and tooling can isolate the store.
+ */
+export function getForgeHostsPath(): string {
+  const envHome = process.env.ARCHON_HOME;
+  return join(envHome ? expandTilde(envHome) : getArchonHome(), 'forge-hosts.json');
+}
+
+/**
  * Get the home-scoped workflows directory (`~/.archon/workflows/`).
  * Workflows placed here are discovered from every repo and apply globally —
  * overridden per-filename by the same name under `<repoRoot>/.archon/workflows/`.
