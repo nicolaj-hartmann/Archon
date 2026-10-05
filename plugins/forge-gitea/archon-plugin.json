@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "kind": "forge",
+  "name": "forge-gitea",
+  "description": "Resolves Gitea repositories and manages qualified pull requests.",
+  "executable": "archon-forge-gitea"
+}
