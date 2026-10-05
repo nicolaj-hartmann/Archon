@@ -30,13 +30,23 @@ export interface ForgeHostsResultLine {
   text: string;
 }
 
+/**
+ * Settle one host's removal: the remaining hosts stay in flight — a single
+ * shared "clear all" would void the second row's busy state mid-removal.
+ */
+export function settleRemoval(hosts: ReadonlySet<string>, host: string): ReadonlySet<string> {
+  const next = new Set(hosts);
+  next.delete(host);
+  return next;
+}
+
 export interface ForgeHostsCardProps {
   hosts: readonly ForgeHostMeta[];
   host: string;
   token: string;
   testing: boolean;
   saving: boolean;
-  removingHost: string | null;
+  removingHosts: ReadonlySet<string>;
   result: ForgeHostsResultLine | null;
   onHostChange: (value: string) => void;
   onTokenChange: (value: string) => void;
@@ -56,7 +66,7 @@ export function ForgeHostsCard({
   token,
   testing,
   saving,
-  removingHost,
+  removingHosts,
   result,
   onHostChange,
   onTokenChange,
@@ -65,6 +75,8 @@ export function ForgeHostsCard({
   onRemove,
 }: ForgeHostsCardProps): ReactElement {
   const trimmedHost = host.trim();
+  // 'Empty' means empty after trim: a whitespace-only draft leaves the verbs disabled.
+  const trimmedToken = token.trim();
   return (
     <SettingsSection title="Forge Hosts">
       <div className="flex flex-col gap-3 text-[12px]">
@@ -74,21 +86,25 @@ export function ForgeHostsCard({
           <p className="font-mono text-[11px] text-text-tertiary">No forge hosts added.</p>
         ) : (
           <ul className="flex flex-col gap-1.5">
-            {hosts.map(h => (
-              <li key={h.host} className="flex items-center justify-between gap-3">
-                <span className="font-mono text-[11px] text-text-primary">{h.host}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onRemove(h.host);
-                  }}
-                  disabled={removingHost === h.host}
-                  className={GHOST_BUTTON}
-                >
-                  {removingHost === h.host ? 'Removing…' : 'Remove'}
-                </button>
-              </li>
-            ))}
+            {hosts.map(h => {
+              const removing = removingHosts.has(h.host);
+              return (
+                <li key={h.host} className="flex items-center justify-between gap-3">
+                  <span className="font-mono text-[11px] text-text-primary">{h.host}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onRemove(h.host);
+                    }}
+                    aria-label={removing ? `Removing ${h.host}` : `Remove ${h.host}`}
+                    disabled={removing}
+                    className={GHOST_BUTTON}
+                  >
+                    {removing ? 'Removing…' : 'Remove'}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
 
@@ -119,14 +135,14 @@ export function ForgeHostsCard({
             <button
               type="button"
               onClick={onTest}
-              disabled={testing || !trimmedHost || !token}
+              disabled={testing || !trimmedHost || !trimmedToken}
               className={GHOST_BUTTON}
             >
               {testing ? 'Checking…' : 'Test connection'}
             </button>
             <button
               type="submit"
-              disabled={saving || !trimmedHost || !token}
+              disabled={saving || !trimmedHost || !trimmedToken}
               className="brand-bar rounded px-3 py-0.5 text-[11px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-40"
             >
               {saving ? 'Saving…' : 'Save host'}
@@ -161,7 +177,7 @@ export function ForgeHostsPanel(): ReactElement {
   const [token, setToken] = useState('');
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [removingHost, setRemovingHost] = useState<string | null>(null);
+  const [removingHosts, setRemovingHosts] = useState<ReadonlySet<string>>(new Set());
   const [result, setResult] = useState<ForgeHostsResultLine | null>(null);
 
   if (error instanceof HttpError && error.status === 401) {
@@ -192,7 +208,12 @@ export function ForgeHostsPanel(): ReactElement {
     try {
       const probe = await testForgeHost(host, token);
       if (cancelledRef.current) return;
-      setResult({ kind: probe.ok ? 'success' : 'failure', text: forgeHostTestLine(probe, host) });
+      // The line renders the trimmed draft — the verb sends it trimmed, so the
+      // operator never sees whitespace around the host.
+      setResult({
+        kind: probe.ok ? 'success' : 'failure',
+        text: forgeHostTestLine(probe, host.trim()),
+      });
       setTesting(false);
     } catch (err: unknown) {
       if (cancelledRef.current) return;
@@ -204,7 +225,7 @@ export function ForgeHostsPanel(): ReactElement {
   const save = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
     const trimmedHost = host.trim();
-    if (!trimmedHost || !token || saving) return;
+    if (!trimmedHost || !token.trim() || saving) return;
     setSaving(true);
     setResult(null);
     try {
@@ -223,18 +244,18 @@ export function ForgeHostsPanel(): ReactElement {
   };
 
   const remove = async (h: string): Promise<void> => {
-    if (removingHost === h) return;
-    setRemovingHost(h);
+    if (removingHosts.has(h)) return;
+    setRemovingHosts(prev => new Set(prev).add(h));
     setResult(null);
     try {
       await removeForgeHost(h);
       invalidate(K.forgeHosts);
       if (cancelledRef.current) return;
-      setRemovingHost(null);
+      setRemovingHosts(prev => settleRemoval(prev, h));
     } catch (err: unknown) {
       if (cancelledRef.current) return;
       setResult({ kind: 'failure', text: errorDetail(err) });
-      setRemovingHost(null);
+      setRemovingHosts(prev => settleRemoval(prev, h));
     }
   };
 
@@ -245,10 +266,17 @@ export function ForgeHostsPanel(): ReactElement {
       token={token}
       testing={testing}
       saving={saving}
-      removingHost={removingHost}
+      removingHosts={removingHosts}
       result={result}
-      onHostChange={setHost}
-      onTokenChange={setToken}
+      onHostChange={value => {
+        setHost(value);
+        // A changed draft is no longer the verified one — drop the result line.
+        setResult(null);
+      }}
+      onTokenChange={value => {
+        setToken(value);
+        setResult(null);
+      }}
       onTest={runTest}
       onSave={save}
       onRemove={remove}

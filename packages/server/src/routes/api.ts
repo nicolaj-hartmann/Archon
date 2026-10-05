@@ -1823,6 +1823,19 @@ export async function requireWebUser(
 }
 
 /**
+ * Host-key normalization for the forge-host routes. Mirrors `normalizeHost`
+ * from @archon/forge/plugin-config — production code in this package does not
+ * depend on @archon/forge, so the mirror is pinned by a conformance test
+ * (api.forge-hosts.test.ts) instead: the store key these routes write must
+ * equal the key dispatch looks up with `normalizeHost(host)`
+ * (packages/forge/src/dispatch.ts), or the stored-credential fallback never
+ * hits.
+ */
+export function normalizeForgeHost(host: string): string {
+  return host.trim().toLowerCase();
+}
+
+/**
  * Register all /api/* routes on the Hono app.
  */
 export function registerApiRoutes(
@@ -2180,9 +2193,6 @@ export function registerApiRoutes(
   });
 
   // ---- Install-wide forge host credentials ----
-  // The server package does not depend on @archon/forge, so host normalization is mirrored here.
-  const normalizeForgeHost = (host: string): string => host.trim().toLowerCase();
-
   /** A raw path tail / body host is malformed when it is blank, contains a
    *  separator ('/', '@'), or carries whitespace. */
   const isMalformedForgeHost = (host: string): boolean =>

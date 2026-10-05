@@ -28,6 +28,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@archon/forge": "workspace:*",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0"
   },

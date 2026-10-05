@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import type { ConversationLockManager } from '@archon/core';
 import type { WebAdapter } from '../adapters/web';
 import { validationErrorHook } from './openapi-defaults';
 import { makeListDashboardRunsMock, mockAllWorkflowModules } from '../test/workflow-mock-factories';
+import { normalizeHost } from '@archon/forge/plugin-config';
 
 // ---------------------------------------------------------------------------
 // Mock setup — must precede the dynamic import of ./api below. Exercises the
@@ -175,7 +176,7 @@ mock.module('../forge-host-probe', () => ({
   testForgeHostConnection: mockProbe,
 }));
 
-import { registerApiRoutes } from './api';
+import { normalizeForgeHost, registerApiRoutes } from './api';
 
 function makeApp(): OpenAPIHono {
   const app = new OpenAPIHono({ defaultHook: validationErrorHook });
@@ -197,8 +198,12 @@ function makeApp(): OpenAPIHono {
 
 const ALICE = { 'X-Archon-User': 'alice' };
 const trackTempRoot = trackTempRoots();
+// requireWebUser resolves the trusted header name per request; the suite pins
+// the default X-Archon-User, so an ambient ARCHON_WEB_AUTH_HEADER must not leak in.
+const originalWebAuthHeader = process.env.ARCHON_WEB_AUTH_HEADER;
 
 beforeEach(() => {
+  delete process.env.ARCHON_WEB_AUTH_HEADER;
   authInstance = null;
   storeHosts = [
     {
@@ -222,6 +227,30 @@ beforeEach(() => {
   configDir = trackTempRoot(mkdtempSync(join(tmpdir(), 'archon-forge-route-')));
   configPath = join(configDir, 'config.yaml');
   writeTrustedConfig();
+});
+
+afterEach(() => {
+  if (originalWebAuthHeader === undefined) delete process.env.ARCHON_WEB_AUTH_HEADER;
+  else process.env.ARCHON_WEB_AUTH_HEADER = originalWebAuthHeader;
+});
+
+describe('host normalization conformance', () => {
+  test('normalizeForgeHost agrees with @archon/forge normalizeHost on the pinned vectors', () => {
+    // The store keys these routes write are the keys dispatch looks up with
+    // normalizeHost(host); a drift in either copy silently orphans the stored
+    // credential. Vectors: case fold, surrounding whitespace, port kept, and
+    // the empty-string edge the routes reject before normalizing.
+    const vectors = [
+      'Code.Core.CI',
+      '  code.core.ci  ',
+      'code.core.ci:3000',
+      '',
+      'GITEA.EXAMPLE.DEV:8080',
+    ];
+    for (const value of vectors) {
+      expect(normalizeForgeHost(value)).toBe(normalizeHost(value));
+    }
+  });
 });
 
 describe('GET /api/forge-hosts', () => {

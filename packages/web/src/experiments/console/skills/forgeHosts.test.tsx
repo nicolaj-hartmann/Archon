@@ -14,6 +14,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import {
   forgeHostTestLine,
+  FORGE_HOST_TEST_TIMEOUT_LINE,
+  FORGE_HOST_TEST_TIMEOUT_MS,
   listForgeHosts,
   removeForgeHost,
   saveForgeHost,
@@ -23,6 +25,7 @@ import {
 import {
   ForgeHostsCard,
   ForgeHostsPanel,
+  settleRemoval,
   type ForgeHostsCardProps,
 } from '../components/ForgeHostsPanel';
 import { SettingsPage } from '../routes/SettingsPage';
@@ -134,6 +137,29 @@ describe('forge-hosts skill verbs', () => {
     await saveForgeHost('code.core.ci', TOKEN);
     await removeForgeHost('code.core.ci');
     for (const call of calls) expect(call.url).not.toContain(TOKEN);
+  });
+
+  test('testForgeHost trims the draft host before sending (the server rejects whitespace)', async () => {
+    await testForgeHost('  code.core.ci  ', TOKEN);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/forge-hosts/test');
+    expect(calls[0].body).toBe(JSON.stringify({ host: 'code.core.ci', token: TOKEN }));
+  });
+
+  test('testForgeHost is client-side bounded: a stalled request rejects with the pinned line', async () => {
+    // Pin the default bound: 2× the server probe's 10 s bound (ux.md D9).
+    expect(FORGE_HOST_TEST_TIMEOUT_MS).toBe(20_000);
+
+    const pending = new Promise<Response>(() => undefined); // never settles
+    globalThis.fetch = (() => pending) as unknown as typeof fetch;
+    let caught: unknown;
+    try {
+      await testForgeHost('code.core.ci', TOKEN, { timeoutMs: 25 });
+    } catch (err: unknown) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(FORGE_HOST_TEST_TIMEOUT_LINE);
   });
 });
 
@@ -332,7 +358,7 @@ describe('ForgeHostsCard (presentational)', () => {
         token=""
         testing={false}
         saving={false}
-        removingHost={null}
+        removingHosts={new Set()}
         result={null}
         onHostChange={() => undefined}
         onTokenChange={() => undefined}
@@ -357,7 +383,7 @@ describe('ForgeHostsCard (presentational)', () => {
   });
 
   test('per-row remove: the in-flight row renames, the other row stays removable', () => {
-    const html = cardHtml({ removingHost: 'code.core.ci' });
+    const html = cardHtml({ removingHosts: new Set(['code.core.ci']) });
     expect(html).toContain('Removing…');
     expect(html).toContain('code.core.ci');
     expect(html).toContain('gitea.example.dev');
@@ -366,6 +392,35 @@ describe('ForgeHostsCard (presentational)', () => {
     // No cross-affordance effect: the form buttons are idle.
     expect(html).toContain('Test connection');
     expect(html).toContain('Save host');
+  });
+
+  test('remove buttons are host-scoped by accessible name; the busy row announces its host', () => {
+    const idle = cardHtml();
+    expect(idle).toContain('aria-label="Remove code.core.ci"');
+    expect(idle).toContain('aria-label="Remove gitea.example.dev"');
+
+    const busy = cardHtml({ removingHosts: new Set(['gitea.example.dev']) });
+    expect(busy).toContain('aria-label="Removing gitea.example.dev"');
+    expect(busy).toContain('aria-label="Remove code.core.ci"');
+  });
+
+  test('two in-flight removals: both rows busy, independently', () => {
+    const html = cardHtml({ removingHosts: new Set(['code.core.ci', 'gitea.example.dev']) });
+    expect(html.match(/Removing…/g) ?? []).toHaveLength(2);
+    expect(html).toContain('aria-label="Removing code.core.ci"');
+    expect(html).toContain('aria-label="Removing gitea.example.dev"');
+    // No idle Remove affordance remains on either row.
+    expect(html).not.toContain('>Remove<');
+    expect(html).not.toContain('aria-label="Remove ');
+  });
+
+  test('settling one removal leaves the others busy (per-host, not clear-all)', () => {
+    const both = new Set(['code.core.ci', 'gitea.example.dev']);
+    expect(settleRemoval(both, 'code.core.ci')).toEqual(new Set(['gitea.example.dev']));
+    expect(settleRemoval(both, 'gitea.example.dev')).toEqual(new Set(['code.core.ci']));
+    expect(settleRemoval(new Set(), 'code.core.ci')).toEqual(new Set());
+    // The input is not mutated — the state stays usable.
+    expect(both.size).toBe(2);
   });
 
   test('result line: pinned strings under role=status with success/error color', () => {
@@ -391,6 +446,13 @@ describe('ForgeHostsCard (presentational)', () => {
     expect(fail).not.toContain('text-success');
   });
 
+  test('the pinned client-timeout line renders as the failure result', () => {
+    const html = cardHtml({ result: { kind: 'failure', text: FORGE_HOST_TEST_TIMEOUT_LINE } });
+    expect(html).toContain(FORGE_HOST_TEST_TIMEOUT_LINE);
+    expect(html).toContain('role="status"');
+    expect(html).toContain('text-error');
+  });
+
   test('pinned placeholders and the house INPUT_CLASS on both inputs', () => {
     const html = cardHtml();
     expect(html).toContain('placeholder="code.example.com"');
@@ -412,5 +474,17 @@ describe('ForgeHostsCard (presentational)', () => {
     // The typed token sits only in the controlled input's value, which an
     // operator expects — and nowhere else in the card.
     expect(active.split('typed-token').length - 1).toBe(1);
+
+    // 'Empty' means empty after trim: a whitespace-only token is treated the
+    // same as a blank one, so the verbs stay disabled even with a valid host
+    // (the pinned ux.md §4.3 state — `!token` alone lets spaces through).
+    const blankToken = cardHtml({ host: 'code.core.ci', token: ' \t ' });
+    expect(blankToken).toContain('Test connection');
+    expect(blankToken).toContain('Save host');
+    expect(disabledButtons(blankToken)).toBe(2);
+
+    // And a whitespace-only host is empty even with a typed token.
+    const blankHost = cardHtml({ host: '   ', token: 'typed-token' });
+    expect(disabledButtons(blankHost)).toBe(2);
   });
 });

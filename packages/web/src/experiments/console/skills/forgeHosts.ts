@@ -21,14 +21,46 @@ export type ForgeHostTestResult =
   | { ok: true; login: string }
   | { ok: false; kind: 'bad_token' | 'unreachable' | 'not_gitea_api'; message: string };
 
+/**
+ * The client-side bound on Test connection: 2× the server probe's bound
+ * (10 s DEFAULT_TIMEOUT_MS in packages/server/src/forge-host-probe.ts). The
+ * server bound is authoritative; the race only guards a stalled server
+ * response (ux.md D9).
+ */
+export const FORGE_HOST_TEST_TIMEOUT_MS = 20_000;
+
+/** The pinned failure line when the client-side bound wins the race (ux.md §4.3). */
+export const FORGE_HOST_TEST_TIMEOUT_LINE =
+  'The connection test timed out. The instance is unreachable from this install or did not answer in time.';
+
 export function listForgeHosts(): Promise<ForgeHostList> {
   return requestJson<ForgeHostList>('/api/forge-hosts');
 }
 
-export function testForgeHost(host: string, token: string): Promise<ForgeHostTestResult> {
-  return requestJson<ForgeHostTestResult>('/api/forge-hosts/test', {
+/**
+ * Test the draft's connection. The host travels trimmed — the server rejects
+ * whitespace in the test body, so the console trims at its own boundary before
+ * the server normalizes. Bounded client-side (ux.md D9); a stalled request
+ * settles with FORGE_HOST_TEST_TIMEOUT_LINE instead of hanging on Checking….
+ */
+export function testForgeHost(
+  host: string,
+  token: string,
+  options: { timeoutMs?: number } = {}
+): Promise<ForgeHostTestResult> {
+  const request = requestJson<ForgeHostTestResult>('/api/forge-hosts/test', {
     method: 'POST',
-    body: JSON.stringify({ host, token }),
+    body: JSON.stringify({ host: host.trim(), token }),
+  });
+  const timeoutMs = options.timeoutMs ?? FORGE_HOST_TEST_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(FORGE_HOST_TEST_TIMEOUT_LINE));
+    }, timeoutMs);
+  });
+  return Promise.race([request, bound]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
   });
 }
 

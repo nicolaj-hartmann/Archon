@@ -3,7 +3,9 @@
  *
  * The store is a JSON file at $ARCHON_HOME/forge-hosts.json (getForgeHostsPath)
  * holding one entry per normalized host: `{ token: <encrypted>, created_at,
- * updated_at }`. Tokens are encrypted with the shared local key
+ * updated_at }`, plus the plan-pinned `version: 1` format marker at the
+ * document level (no reader branches on it; the list skips the key). Tokens
+ * are encrypted with the shared local key
  * (token-crypto). Every read is degraded-safe: an unreadable document or a
  * credential encrypted under a different key yields an empty/omitted result
  * plus exactly one warn log line that names the host (or the store file) and
@@ -71,6 +73,7 @@ describe('saveForgeHost / getForgeHostCredentials / listForgeHosts', () => {
 
     const raw = readFileSync(storePath(), 'utf8');
     expect(raw).toContain('code.core.ci');
+    expect(raw).toContain('"version": 1');
     expect(raw).not.toContain('tok-abc-123');
     // 0600 — the store holds credential material (mode bits are not honored on win32).
     if (process.platform !== 'win32') {
@@ -80,6 +83,7 @@ describe('saveForgeHost / getForgeHostCredentials / listForgeHosts', () => {
     expect(await getForgeHostCredentials()).toEqual(new Map([['code.core.ci', 'tok-abc-123']]));
 
     const hosts = await listForgeHosts();
+    // The version marker is document-level, not a host entry.
     expect(hosts).toEqual([
       {
         host: 'code.core.ci',
@@ -87,6 +91,7 @@ describe('saveForgeHost / getForgeHostCredentials / listForgeHosts', () => {
         updated_at: '2025-01-01T00:00:00Z',
       },
     ]);
+    expect(hosts.map(h => h.host)).not.toContain('version');
     expect(JSON.stringify(hosts)).not.toContain('tok-abc-123');
   });
 
@@ -98,13 +103,25 @@ describe('saveForgeHost / getForgeHostCredentials / listForgeHosts', () => {
       string,
       { token: string; created_at: string; updated_at: string }
     >;
-    expect(Object.keys(doc)).toEqual(['code.core.ci']);
+    expect(Object.keys(doc).sort()).toEqual(['code.core.ci', 'version']);
 
     expect(await getForgeHostCredentials()).toEqual(new Map([['code.core.ci', 'tok-second']]));
 
     const [entry] = await listForgeHosts();
     expect(entry.created_at).toBe('2025-01-01T00:00:00Z');
     expect(entry.updated_at).toBe('2025-02-02T00:00:00Z');
+  });
+
+  test('a document missing the version key regains it on the next save', async () => {
+    await saveForgeHost('code.core.ci', 'tok-first', { now: NOW_1 });
+    const doc = JSON.parse(readFileSync(storePath(), 'utf8')) as Record<string, unknown>;
+    delete doc.version;
+    writeFileSync(storePath(), `${JSON.stringify(doc, null, 2)}\n`);
+
+    await saveForgeHost('code.core.ci', 'tok-second', { now: NOW_2 });
+    const restored = JSON.parse(readFileSync(storePath(), 'utf8')) as Record<string, unknown>;
+    expect(restored.version).toBe(1);
+    expect(Object.keys(restored).sort()).toEqual(['code.core.ci', 'version']);
   });
 
   test('deleteForgeHost is idempotent', async () => {

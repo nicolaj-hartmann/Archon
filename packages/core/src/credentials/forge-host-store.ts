@@ -9,7 +9,9 @@
  * survives a save untouched. Reads degrade: an unreadable document or an
  * undecryptable entry yields an empty/omitted result plus one warn naming the
  * host — never the token or its ciphertext. Callers pass `normalizeHost`-ed
- * keys; the store does not normalize.
+ * keys; the store does not normalize. The document carries `version: 1` as a
+ * format marker alongside the host entries; no reader branches on its value,
+ * and `listForgeHosts` skips the key.
  */
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -184,6 +186,7 @@ export async function saveForgeHost(
     const doc = readDocumentForWrite(path);
     const now = options.now?.() ?? new Date().toISOString();
     const previous = isRecord(doc[host]) ? doc[host] : undefined;
+    doc.version = 1; // format marker, written on every save; a hand-repaired file regains it
     doc[host] = {
       token: encryptToken(token, getEncryptionKey()),
       created_at: typeof previous?.created_at === 'string' ? previous.created_at : now,
@@ -229,13 +232,15 @@ export async function getForgeHostCredentials(): Promise<Map<string, string>> {
 
 /**
  * Metadata for every stored host — never a token or ciphertext; undecryptable
- * entries still list.
+ * entries still list. The `version` document key is not a host.
  */
 export async function listForgeHosts(): Promise<ForgeHostMeta[]> {
   const doc = readDocumentForRead(getForgeHostsPath());
-  return Object.entries(doc).map(([host, entry]) => ({
-    host,
-    created_at: isRecord(entry) && typeof entry.created_at === 'string' ? entry.created_at : '',
-    updated_at: isRecord(entry) && typeof entry.updated_at === 'string' ? entry.updated_at : '',
-  }));
+  return Object.entries(doc)
+    .filter(([key]) => key !== 'version')
+    .map(([host, entry]) => ({
+      host,
+      created_at: isRecord(entry) && typeof entry.created_at === 'string' ? entry.created_at : '',
+      updated_at: isRecord(entry) && typeof entry.updated_at === 'string' ? entry.updated_at : '',
+    }));
 }
