@@ -53,6 +53,14 @@ RUN bun run build:web && \
     test -f packages/web/dist/index.html || \
     (echo "ERROR: Web build produced no index.html" >&2 && exit 1)
 
+# Build the first-party forge plugin executables. Compiled per build platform,
+# so the arm64 leg of the multi-arch publish produces an arm64 binary the same
+# way the web build already relies on the emulated platform.
+RUN bun run --cwd packages/adapters build:github-plugin && \
+    bun run --cwd packages/adapters build:gitea-plugin && \
+    test -x packages/adapters/dist/archon-forge-github && \
+    test -x packages/adapters/dist/archon-forge-gitea
+
 # ---------------------------------------------------------------------------
 # Stage 3: Production image
 # ---------------------------------------------------------------------------
@@ -179,6 +187,11 @@ COPY --chown=appuser:appuser packages/workflows/ ./packages/workflows/
 
 # Copy pre-built web UI from build stage
 COPY --from=web-build --chown=appuser:appuser /app/packages/web/dist/ ./packages/web/dist/
+
+# Ship the first-party forge plugin executables on PATH: forge discovery scans
+# PATH for `archon-forge-<name>` binaries (scanPath), so plugins work out of the
+# box — hosts still opt in per-host through trusted forge.hosts config.
+COPY --from=web-build --chown=appuser:appuser /app/packages/adapters/dist/archon-forge-github /app/packages/adapters/dist/archon-forge-gitea /usr/local/bin/
 
 # Copy config, migrations, and bundled defaults
 COPY --chown=appuser:appuser .archon/ ./.archon/
