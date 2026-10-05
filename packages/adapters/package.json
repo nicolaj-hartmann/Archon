@@ -10,12 +10,14 @@
     "./forge/github-source-plugin": "./src/forge/github/source-plugin.ts",
     "./community/forge/gitea": "./src/community/forge/gitea/index.ts",
     "./community/forge/gitlab": "./src/community/forge/gitlab/index.ts",
-    "./forge/github-plugin": "./src/forge/github/plugin.ts"
+    "./forge/github-plugin": "./src/forge/github/plugin.ts",
+    "./forge/gitea-plugin": "./src/forge/gitea/plugin.ts"
   },
   "scripts": {
     "test": "bun run ../../scripts/package-tests.ts",
     "type-check": "bun x tsc --noEmit",
     "build:github-plugin": "bun build --compile ./src/forge/github/plugin.ts --outfile ./dist/archon-forge-github",
+    "build:gitea-plugin": "bun build --compile ./src/forge/gitea/plugin.ts --outfile ./dist/archon-forge-gitea",
     "build:github-source-plugin": "bun build ./src/forge/github/source-plugin.ts --target=bun --outfile=dist/github-source-plugin.mjs"
   },
   "dependencies": {
@@ -33,6 +35,9 @@
     "grammy": "^1.36.0",
     "telegramify-markdown": "^1.3.3",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@archon/plugin-manifest": "workspace:*"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
@@ -80,6 +85,18 @@
     ],
     [
       "src/forge/github/lifecycle.test.ts"
+    ],
+    [
+      "src/forge/gitea/operations.test.ts"
+    ],
+    [
+      "src/forge/gitea/lifecycle.test.ts"
+    ],
+    [
+      "src/forge/gitea/dispatch.test.ts"
+    ],
+    [
+      "src/forge/gitea/manifest.test.ts"
     ],
     [
       "src/platform-policies.test.ts"
